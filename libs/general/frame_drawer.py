@@ -394,10 +394,11 @@ class FrameDrawer():
             img_path = os.path.join(img_dir_path, "{:06d}.jpg".format(vo.cur_data['id']))
             cv2.imwrite(img_path, vo.drawer.img)
         
-        cv2.imshow('DF-VO', vo.drawer.img)
-        cv2.waitKey(1)
+        # ## comment out interactive mode
+        # cv2.imshow('DF-VO', vo.drawer.img)
+        # cv2.waitKey(1)
 
-        vo.drawer.interface()
+        # vo.drawer.interface()
 
         vo.timers.timers["visualization"].append(time()-start_time)
         return vo
