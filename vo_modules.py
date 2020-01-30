@@ -765,6 +765,87 @@ class VisualOdometry():
             del(ref_data)
             del(cur_data)
 
+    def get_flow_forward(self):
+        cur_data, ref_data = self.deep_flow_forward(
+                                    self.cur_data,
+                                    self.ref_data,
+                                    forward_backward=self.cfg.deep_flow.forward_backward)
+        return cur_data, ref_data
+
+    def region_tracking(self):
+        """Tracking using both Essential matrix and PnP
+        Essential matrix for rotation (and direction);
+            *** triangluate depth v.s. CNN-depth for translation scale ***
+        PnP if Essential matrix fails
+        """
+        # First frame
+        if self.tracking_stage == 0:
+            # initial
+            self.cur_data['pose'] = SE3(self.gt_poses[self.cur_data['id']])
+            self.tracking_stage = 1
+            return
+
+        # Second to last frames
+        elif self.tracking_stage >= 1:
+            # Flow-net for 2D-2D correspondence
+            start_time = time()
+            cur_data, ref_data = self.get_flow_forward()
+
+            self.timers.timers['Flow-CNN'].append(time()-start_time)
+
+            for ref_id in self.ref_data['id']:
+                # Compose hybrid pose
+                hybrid_pose = SE3()
+
+                # FIXME: add if statement for deciding which kp to use
+                # Essential matrix pose
+                E_pose, _ = self.compute_pose_2d2d(
+                                cur_data['kp_best'],
+                                ref_data['kp_best'][ref_id]) # pose: from cur->ref
+
+                # Rotation
+                hybrid_pose.R = E_pose.R
+
+                # translation scale from triangulation v.s. CNN-depth
+                if np.linalg.norm(E_pose.t) != 0:
+                    scale = self.find_scale_from_depth(
+                        cur_data['kp_best'], ref_data['kp_best'][ref_id],
+                        E_pose.inv_pose, self.cur_data['depth']
+                    )
+                    if scale != -1:
+                        hybrid_pose.t = E_pose.t * scale
+
+                # PnP if Essential matrix fail
+                if np.linalg.norm(E_pose.t) == 0 or scale == -1:
+                    pnp_pose, _, _ \
+                        = self.compute_pose_3d2d(
+                                    cur_data['kp_best'],
+                                    ref_data['kp_best'][ref_id],
+                                    ref_data['depth'][ref_id]
+                                    ) # pose: from cur->ref
+                    # use PnP pose instead of E-pose
+                    hybrid_pose = pnp_pose
+                    self.tracking_mode = "PnP"
+                ref_data['pose'][ref_id] = copy.deepcopy(hybrid_pose)
+                # ref_data['pose'][ref_id] = hybrid_pose
+
+            
+            self.ref_data = copy.deepcopy(ref_data)
+            self.cur_data = copy.deepcopy(cur_data)
+
+            # copy keypoint for visualization
+            self.ref_data['kp'] = copy.deepcopy(ref_data['kp_best'])
+            self.cur_data['kp'] = copy.deepcopy(cur_data['kp_best'])
+            
+            # update global poses
+            pose = self.ref_data['pose'][self.ref_data['id'][-1]]
+            self.update_global_pose(pose, 1)
+
+            self.tracking_stage += 1
+            del(ref_data)
+            del(cur_data)
+
+
     def update_ref_data(self, ref_data, cur_data, window_size, kf_step=1):
         """Update reference data
         Args:
@@ -899,6 +980,95 @@ class VisualOdometry():
             self.gt_poses = copy.deepcopy(self.tmp_gt_poses)
         return rgb_d_pose_pair
 
+    def region_sfm(self):
+        """ This function serves to calculate R,t for regions in an image.
+        Image
+        - depth, optical flow
+        - regions
+        - corrspondences/ region
+        - put R,t back to image
+        """
+        """ Initialization """
+        # Synchronize rgb-d-pose pair
+        self.rgb_d_pose_pair = self.synchronize_rgbd_pose_pairs()
+        len_seq = len(self.rgb_d_pose_pair)
+
+        # Main
+        print("==> Start VO")
+        main_start_time = time()
+        # start_frame = int(input("Start with frame: "))        
+        start_frame = len_seq - 10
+        print(f"start frame: ")
+
+        for img_id in tqdm(range(start_frame, len_seq)):
+            self.tracking_mode = "Ess. Mat."
+
+            """ Data reading """
+            start_time = time()
+
+            # Initialize ids and timestamps
+            self.cur_data['id'] = img_id
+
+            if self.cfg.dataset == "kitti":
+                self.cur_data['timestamp'] = img_id
+            elif "tum" in self.cfg.dataset:
+                self.cur_data['timestamp'] = sorted(list(self.rgb_d_pose_pair.keys()))[img_id]
+            
+            # Reading image
+            if self.cfg.dataset == "kitti":
+                img = read_image(self.img_path_dir+"/{:06d}.png".format(img_id), 
+                                    self.cfg.image.height, self.cfg.image.width)
+            elif "tum" in self.cfg.dataset:
+                img = read_image(self.img_path_dir+"/{:.6f}.png".format(self.cur_data['timestamp']),
+                                    self.cfg.image.height, self.cfg.image.width)
+            img_h, img_w, _ = image_shape(img)
+            self.cur_data['img'] = img
+            self.timers.timers["img_reading"].append(time()-start_time)
+
+            # Reading/Predicting depth
+            if self.depth_src is not None:
+                self.cur_data['raw_depth'] = self.load_depth(
+                                self.depth_seq_dir, 
+                                self.rgb_d_pose_pair[self.cur_data['timestamp']]['depth'], 
+                                self.depth_src, 
+                                [img_h, img_w], 
+                                dataset=self.cfg.dataset,
+                                )
+            else:
+                start_time = time()
+                self.cur_data['raw_depth'] = \
+                        self.deep_models['depth'].inference(img=self.cur_data['img'])
+                self.cur_data['raw_depth'] = cv2.resize(self.cur_data['raw_depth'],
+                                                    (img_w, img_h),
+                                                    interpolation=cv2.INTER_NEAREST
+                                                    )
+                self.timers.timers['Depth-CNN'].append(time()-start_time)
+            self.cur_data['depth'] = preprocess_depth(self.cur_data['raw_depth'], self.cfg.crop.depth_crop, [self.cfg.depth.min_depth, self.cfg.depth.max_depth])
+
+            """ Visual odometry """
+            start_time = time()
+            if self.tracking_method == "hybrid":
+                self.region_tracking()
+            else:
+                raise NotImplementedError
+            self.timers.timers["tracking"].append(time()-start_time)
+
+            """ Visualization """
+            start_time = time()
+            self=self.drawer.main(self)
+            self.timers.timers["visualization"].append(time()-start_time)
+
+            """ Update reference and current data """
+            self.ref_data, self.cur_data = self.update_ref_data(
+                                    self.ref_data,
+                                    self.cur_data,
+                                    self.window_size,
+                                    self.keyframe_step
+            )
+
+
+        pass
+
     def main(self):
         """ Initialization """
         # Synchronize rgb-d-pose pair
@@ -975,6 +1145,7 @@ class VisualOdometry():
                                     self.window_size,
                                     self.keyframe_step
             )
+
 
         print("=> Finish!")
         """ Display & Save result """
