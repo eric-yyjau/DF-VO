@@ -254,6 +254,10 @@ class LiteFlow():
         """
         # Get flow data
         # if precomputed flow is provided, load precomputed flow
+        # dense kp1, dense kp2
+        self.dense_kp1 = None
+        self.dense_kp2 = None
+
         if flow_dir is not None:
             if self.half_flow:
                 self.half_flow = False
@@ -359,7 +363,17 @@ class LiteFlow():
             flows['backward'] = back_flow_data
             flows['flow_diff'] = flow_diff
         # return kp1, kp2, flows
+        ## save dense kp1, kp2 for use
+        self.dense_kp1 = kp1
+        self.dense_kp2 = kp2
+        flows['dense_kp1'] = kp1
+        flows['dense_kp2'] = kp2
+
         return kp1_best, kp2_best, kp1_list, kp2_list, flows
+
+    def get_dense_kps(self):
+        return {'dense_kp1': self.dense_kp1, 'dense_kp2': self.dense_kp2}
+        pass
 
     def forward_backward_consistency(self, flow1, flow2, px_coord_2):
         """Compute flow consistency map

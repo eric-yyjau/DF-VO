@@ -680,6 +680,10 @@ class VisualOdometry():
         cur_data['kp_best'] = batch_kp_ref_best[0].copy() # cur_data save each kp at ref-view (i.e. regular grid)
         cur_data['kp_list'] = batch_kp_ref_regular[0].copy() # cur_data save each kp at ref-view (i.e. regular grid)
 
+        # store dense kp
+        cur_data['dense_kp1'] = batch_flows['dense_kp1']
+        cur_data['dense_kp2'] = batch_flows['dense_kp2']
+
         for i, ref_id in enumerate(ref_data['id']):
             ref_data['kp_best'][ref_id] = kp_ref_best[i].copy()
             ref_data['kp_list'][ref_id] = kp_ref_regular[i].copy()
@@ -765,12 +769,72 @@ class VisualOdometry():
             del(ref_data)
             del(cur_data)
 
-    def get_flow_forward(self):
+    def get_flow_point_data(self):
+        # original
         cur_data, ref_data = self.deep_flow_forward(
                                     self.cur_data,
                                     self.ref_data,
                                     forward_backward=self.cfg.deep_flow.forward_backward)
         return cur_data, ref_data
+
+    # def run_flow_forward(self, in_cur_data, in_ref_data, forward_backward):
+    #     """Update flow in cur_data and ref_data
+    #     # FIXME: duplicated from self.deep_flow_forward
+    #     Args:
+    #         cur_data (dict): current data
+    #         ref_data (dict): reference data
+    #         forward_backward (bool): use forward-backward consistency if True
+    #     Returns:
+    #         cur_data (dict): current data
+    #         ref_data (dict): reference data
+    #     """
+    #     cur_data = copy.deepcopy(in_cur_data)
+    #     ref_data = copy.deepcopy(in_ref_data)
+    #     if self.cfg.deep_flow.precomputed_flow is None:
+    #         # Preprocess image
+    #         ref_imgs = []
+    #         cur_imgs = []
+    #         cur_img = np.transpose((cur_data['img'])/255, (2, 0, 1))
+    #         for ref_id in ref_data['id']:
+    #             ref_img = np.transpose((ref_data['img'][ref_id])/255, (2, 0, 1))
+    #             ref_imgs.append(ref_img)
+    #             cur_imgs.append(cur_img)
+    #         ref_imgs = np.asarray(ref_imgs)
+    #         cur_imgs = np.asarray(cur_imgs)
+    #     else:
+    #         # if precomputed flow is available, collect image timestamps for
+    #         # later data reading
+    #         ref_imgs = [ref_data['timestamp'][idx] for idx in ref_data['id']]
+    #         cur_imgs = [cur_data['timestamp'] for i in ref_data['timestamp']]
+    #     pass
+
+    def get_flow_forward(self):
+        # edited
+        # TODO: only get flow image
+        """
+        return:
+            cur_data:
+                ['dense_kp1']: image size grid points
+                ['dense_kp2']: image size corr points (converted flow images)
+
+        """
+        cur_data, ref_data = self.deep_flow_forward(
+                                    self.cur_data,
+                                    self.ref_data,
+                                    forward_backward=self.cfg.deep_flow.forward_backward)
+        return cur_data, ref_data
+        pass
+
+    def compute_regions(self):
+        """
+        return:
+            regions: [[Nx2], ...]
+        """
+        # image size
+
+        # generate small grids
+        # grid --> reshape
+        pass
 
     def region_tracking(self):
         """Tracking using both Essential matrix and PnP
@@ -789,7 +853,22 @@ class VisualOdometry():
         elif self.tracking_stage >= 1:
             # Flow-net for 2D-2D correspondence
             start_time = time()
+            cur_data, ref_data = self.get_flow_point_data()
+            # get flow, save in cur_data, ref_data
             cur_data, ref_data = self.get_flow_forward()
+            # get region info
+            regions, corres = self.compute_regions(cur_data)
+            ## regions = [[(Nx2)], [], ...], corres = [[Nx2], ]
+            # get correspondences for each region, save in ??
+
+            # for loop to feed correspondences to estimate pose
+            poses = []
+            for corr in corres:
+                E_pose = self.compute_pose(...)
+
+            # put R,t back to the image
+
+            # save to cur_data, ref_data
 
             self.timers.timers['Flow-CNN'].append(time()-start_time)
 
@@ -829,7 +908,7 @@ class VisualOdometry():
                 ref_data['pose'][ref_id] = copy.deepcopy(hybrid_pose)
                 # ref_data['pose'][ref_id] = hybrid_pose
 
-            
+
             self.ref_data = copy.deepcopy(ref_data)
             self.cur_data = copy.deepcopy(cur_data)
 
