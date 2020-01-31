@@ -825,16 +825,37 @@ class VisualOdometry():
         return cur_data, ref_data
         pass
 
-    def compute_regions(self):
+    def compute_regions(self, dense_kp1, dense_kp2, patch_size=16):
         """
+        input:
+            dense_kp1: tensor [H, W, 2]
+            dense_kp2: tensor [H, W, 2]
         return:
             regions: [[Nx2], ...]
         """
-        # image size
+        import torch
+        dense_kp1 = torch.from_numpy(dense_kp1)
+        dense_kp2 = torch.from_numpy(dense_kp2)
+        # transform dimensions
+        trans_dim = lambda x: x.transpose(1, 2).transpose(0, 1)
+        dense_kp1_tr = trans_dim(dense_kp1)
+        dense_kp2_tr = trans_dim(dense_kp2)
+        grids = dense_kp1_tr
+        dense_corres = torch.cat((dense_kp1_tr, dense_kp2_tr), 0)
 
+        # pad to be the multiplication of crop width
         # generate small grids
-        # grid --> reshape
-        pass
+        from models.crop_regions import Grid_generator
+        grid_generator = Grid_generator()
+        regions = grid_generator(grids.unsqueeze(0), patch_size=patch_size) # tensor [Batch, 2, Nc, patch**2]
+        # get correspondences
+        N, ch, Nc, patch_area = regions.shape
+        regions = regions.view(N, ch, Nc * patch_area)
+        assert N == 1
+        sample_corres = dense_corres[:, regions[0,1,:].long(), regions[0,0,:].long()] # tensor [4, Nc], sample [:,y,x]
+        sample_corres = sample_corres.view(4, Nc, patch_area)
+        # return regions, sample_corres
+        return regions.numpy(), sample_corres.numpy()
 
     def region_tracking(self):
         """Tracking using both Essential matrix and PnP
@@ -857,14 +878,17 @@ class VisualOdometry():
             # get flow, save in cur_data, ref_data
             cur_data, ref_data = self.get_flow_forward()
             # get region info
-            regions, corres = self.compute_regions(cur_data)
+            regions, sample_corres = self.compute_regions(cur_data['dense_kp1'][0],
+                                                   cur_data['dense_kp2'][0]) # feed in the grids
+            # regions, corres = self.compute_regions(cur_data['dense_kp1'][0]) # feed in the grids
             ## regions = [[(Nx2)], [], ...], corres = [[Nx2], ]
             # get correspondences for each region, save in ??
 
             # for loop to feed correspondences to estimate pose
             poses = []
-            for corr in corres:
-                E_pose = self.compute_pose(...)
+
+            # for corr in corres:
+            #     E_pose = self.compute_pose(...)
 
             # put R,t back to the image
 
@@ -950,6 +974,9 @@ class VisualOdometry():
             ref_data (dict): reference data
         """
         for key in cur_data:
+            # edit due to added keys
+            if key == "dense_kp1" or key == "dense_kp2":
+                continue
             if key == "id":
                 ref_data['id'].append(cur_data['id'])
                 if len(ref_data['id']) > window_size - 1:
