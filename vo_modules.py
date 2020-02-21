@@ -332,7 +332,7 @@ class VisualOdometry():
         - Set drawer
         """
         # read camera intrinsics
-        intrinsics_param = self.get_intrinsics_param(self.cfg.dataset)
+        intrinsics_param = self.get_intrinsics_param(self.cfg.dataset_cam)
         self.cam_intrinsics = Intrinsics(intrinsics_param)
 
         # get tracking method
@@ -367,6 +367,7 @@ class VisualOdometry():
             if self.cfg.deep_flow.precomputed_flow is not None:
                 self.cfg.deep_flow.precomputed_flow = self.cfg.deep_flow.precomputed_flow.replace("{}", self.cfg.seq)
 
+        
         # single-view depth
         if self.depth_src is None:
             if self.cfg.depth.pretrained_model is not None:
